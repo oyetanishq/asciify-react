@@ -43,5 +43,8 @@
         "noise",
         "animation",
         "typescript"
-    ]
+    ],
+    "dependencies": {
+        "asciify-react": "link:"
+    }
 }
