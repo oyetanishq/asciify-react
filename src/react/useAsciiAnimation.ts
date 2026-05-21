@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { imageToAscii, renderFrame, loadImageSource, ImageToAsciiOptions, RenderOptions } from "../core/imageToAscii";
 
 export interface UseAsciiAnimationOptions extends ImageToAsciiOptions, RenderOptions {
@@ -7,6 +7,12 @@ export interface UseAsciiAnimationOptions extends ImageToAsciiOptions, RenderOpt
     noiseSpeed?: number;
     /** Called once after the first frame is rendered. */
     onReady?: (canvas: HTMLCanvasElement) => void;
+    /**
+     * When provided, a ResizeObserver watches this element and automatically
+     * recomputes numCols so the ASCII output fills the container width.
+     * The explicit `numCols` prop is then used as the maximum cap.
+     */
+    containerRef?: React.RefObject<HTMLElement | null>;
 }
 
 export interface UseAsciiAnimationReturn {
@@ -14,6 +20,8 @@ export interface UseAsciiAnimationReturn {
     canvasRef: React.RefObject<HTMLCanvasElement | null>;
     /** Force a re-render of the current frame (e.g. after options change). */
     redraw: () => void;
+    /** Current effective number of columns (may be derived from container width). */
+    effectiveNumCols: number;
 }
 
 /**
@@ -37,7 +45,21 @@ export function useAsciiAnimation(options: UseAsciiAnimationOptions): UseAsciiAn
         fontSize = 10,
         fontFamily = "monospace",
         onReady,
+        containerRef,
     } = options;
+
+    // When a containerRef is supplied we derive numCols from the container width.
+    // The prop `numCols` acts as the maximum cap in that case.
+    const [effectiveNumCols, setEffectiveNumCols] = useState<number>(() => {
+        if (containerRef?.current) {
+            const charW = fontSize * 0.6;
+            return Math.max(1, Math.min(numCols, Math.floor(containerRef.current.clientWidth / charW)));
+        }
+        return numCols;
+    });
+
+    // Keep a ref so drawFrame always reads the latest value without stale closure.
+    const effectiveNumColsRef = useRef<number>(effectiveNumCols);
 
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const imageRef = useRef<HTMLImageElement | null>(null);
@@ -46,6 +68,46 @@ export function useAsciiAnimation(options: UseAsciiAnimationOptions): UseAsciiAn
     const lastTimestampRef = useRef<number | null>(null);
     const readyFiredRef = useRef<boolean>(false);
 
+    // ─── Sync effectiveNumColsRef with state ──────────────────────────────────
+    useEffect(() => {
+        effectiveNumColsRef.current = effectiveNumCols;
+    }, [effectiveNumCols]);
+
+    // ─── ResizeObserver – recompute numCols when container resizes ────────────
+    useEffect(() => {
+        if (!containerRef) {
+            // No container → just use the prop directly.
+            setEffectiveNumCols(numCols);
+            effectiveNumColsRef.current = numCols;
+            return;
+        }
+
+        const el = containerRef.current;
+        if (!el) return;
+
+        const compute = (width: number) => {
+            const charW = fontSize * 0.6;
+            const cols = Math.max(1, Math.min(numCols, Math.floor(width / charW)));
+            setEffectiveNumCols(cols);
+            effectiveNumColsRef.current = cols;
+        };
+
+        // Initial measurement
+        compute(el.clientWidth);
+
+        const observer = new ResizeObserver((entries) => {
+            const entry = entries[0];
+            if (!entry) return;
+            // Use contentBoxSize when available for sub-pixel precision
+            const width =
+                entry.contentBoxSize?.[0]?.inlineSize ?? (entry.target as HTMLElement).clientWidth;
+            compute(width);
+        });
+
+        observer.observe(el);
+        return () => observer.disconnect();
+    }, [containerRef, fontSize, numCols]);
+
     // ─── Draw a single frame ──────────────────────────────────────────────────
     const drawFrame = useCallback(() => {
         const canvas = canvasRef.current;
@@ -53,7 +115,7 @@ export function useAsciiAnimation(options: UseAsciiAnimationOptions): UseAsciiAn
         if (!canvas || !image) return;
 
         const frame = imageToAscii(image, {
-            numCols,
+            numCols: effectiveNumColsRef.current,
             charset,
             color,
             cellHeightScale,
@@ -67,7 +129,7 @@ export function useAsciiAnimation(options: UseAsciiAnimationOptions): UseAsciiAn
             readyFiredRef.current = true;
             onReady(canvas);
         }
-    }, [numCols, charset, color, cellHeightScale, noiseScale, background, fontSize, fontFamily, onReady]);
+    }, [effectiveNumCols, charset, color, cellHeightScale, noiseScale, background, fontSize, fontFamily, onReady]);
 
     // ─── Animation loop ───────────────────────────────────────────────────────
     const startLoop = useCallback(() => {
@@ -151,5 +213,5 @@ export function useAsciiAnimation(options: UseAsciiAnimationOptions): UseAsciiAn
         drawFrame();
     }, [drawFrame]);
 
-    return { canvasRef, redraw };
+    return { canvasRef, redraw, effectiveNumCols };
 }

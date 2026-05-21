@@ -1,4 +1,4 @@
-import React, { CSSProperties, forwardRef } from "react";
+import React, { CSSProperties, forwardRef, useRef } from "react";
 import { useAsciiAnimation } from "./useAsciiAnimation";
 import { CharsetName } from "../core/charsets";
 
@@ -88,6 +88,15 @@ export interface AsciiImageProps {
      * Defaults to "ASCII art image".
      */
     "aria-label"?: string;
+
+    /**
+     * When `true`, the component fills its parent container and automatically
+     * adjusts `numCols` (up to the value you pass) to match the available width.
+     * The parent must have an explicit size (e.g. `width: 100%`, `height: 100%`,
+     * or `flex: 1`) for this to work correctly.
+     * @default false
+     */
+    responsive?: boolean;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -124,7 +133,11 @@ export const AsciiImage = forwardRef<HTMLDivElement, AsciiImageProps>(function A
         className,
         style,
         "aria-label": ariaLabel = "ASCII art image",
+        responsive = false,
     } = props;
+
+    // Used as the resize anchor when responsive=true
+    const containerRef = useRef<HTMLDivElement>(null);
 
     const { canvasRef } = useAsciiAnimation({
         src,
@@ -137,18 +150,38 @@ export const AsciiImage = forwardRef<HTMLDivElement, AsciiImageProps>(function A
         fontSize,
         fontFamily,
         onReady,
+        containerRef: responsive ? containerRef : undefined,
     });
 
-    const containerStyle: CSSProperties = {
-        display: "inline-block",
-        lineHeight: 0,
-        backgroundColor: background,
-        ...style,
-    };
+    const containerStyle: CSSProperties = responsive
+        ? {
+              display: "block",
+              width: "100%",
+              height: "100%",
+              overflow: "hidden",
+              lineHeight: 0,
+              backgroundColor: background,
+              ...style,
+          }
+        : {
+              display: "inline-block",
+              lineHeight: 0,
+              backgroundColor: background,
+              ...style,
+          };
+
+    const canvasStyle: CSSProperties = responsive
+        ? { display: "block", width: "100%", height: "100%", objectFit: "contain" }
+        : { display: "block" };
 
     return (
-        <div ref={ref} className={className} style={containerStyle}>
-            <canvas ref={canvasRef} role="img" aria-label={ariaLabel} style={{ display: "block" }} />
+        <div ref={(node) => {
+            // Support both the forwarded ref and our internal containerRef
+            containerRef.current = node;
+            if (typeof ref === "function") ref(node);
+            else if (ref) (ref as React.MutableRefObject<HTMLDivElement | null>).current = node;
+        }} className={className} style={containerStyle}>
+            <canvas ref={canvasRef} role="img" aria-label={ariaLabel} style={canvasStyle} />
         </div>
     );
 });
