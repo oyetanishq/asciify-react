@@ -9,10 +9,17 @@ export interface UseAsciiAnimationOptions extends ImageToAsciiOptions, RenderOpt
     onReady?: (canvas: HTMLCanvasElement) => void;
     /**
      * When provided, a ResizeObserver watches this element and automatically
-     * recomputes numCols so the ASCII output fills the container width.
-     * The explicit `numCols` prop is then used as the maximum cap.
+     * recomputes numCols to fill/fit the container.
+     * The explicit `numCols` prop acts as a maximum cap.
      */
     containerRef?: React.RefObject<HTMLElement | null>;
+    /**
+     * CSS `object-fit`-like sizing mode. Only meaningful when `containerRef` is set.
+     * - `"contain"` — fill the container while preserving aspect ratio (letterboxed)
+     * - `"cover"`   — fill the container fully, cropping if needed
+     * - `undefined` — width-only responsive (legacy behaviour)
+     */
+    fit?: "contain" | "cover";
 }
 
 export interface UseAsciiAnimationReturn {
@@ -20,8 +27,14 @@ export interface UseAsciiAnimationReturn {
     canvasRef: React.RefObject<HTMLCanvasElement | null>;
     /** Force a re-render of the current frame (e.g. after options change). */
     redraw: () => void;
-    /** Current effective number of columns (may be derived from container width). */
+    /** Current effective number of columns (may be derived from container dimensions). */
     effectiveNumCols: number;
+    /**
+     * When `fit` is active, the exact CSS pixel dimensions the canvas element
+     * should be styled with so it visually fills the container using contain/cover
+     * semantics.  `null` when fit mode is not in use.
+     */
+    canvasCssSize: { width: number; height: number } | null;
 }
 
 /**
@@ -46,20 +59,17 @@ export function useAsciiAnimation(options: UseAsciiAnimationOptions): UseAsciiAn
         fontFamily = "monospace",
         onReady,
         containerRef,
+        fit,
     } = options;
 
-    // When a containerRef is supplied we derive numCols from the container width.
-    // The prop `numCols` acts as the maximum cap in that case.
-    const [effectiveNumCols, setEffectiveNumCols] = useState<number>(() => {
-        if (containerRef?.current) {
-            const charW = fontSize * 0.6;
-            return Math.max(1, Math.min(numCols, Math.floor(containerRef.current.clientWidth / charW)));
-        }
-        return numCols;
-    });
+    const [effectiveNumCols, setEffectiveNumCols] = useState<number>(numCols);
+    const [canvasCssSize, setCanvasCssSize] = useState<{ width: number; height: number } | null>(null);
 
-    // Keep a ref so drawFrame always reads the latest value without stale closure.
+    // Keep a ref so drawFrame always reads the latest value without stale closures.
     const effectiveNumColsRef = useRef<number>(effectiveNumCols);
+
+    // Last measured container dimensions (pixels).
+    const containerSizeRef = useRef<{ width: number; height: number } | null>(null);
 
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const imageRef = useRef<HTMLImageElement | null>(null);
@@ -68,45 +78,142 @@ export function useAsciiAnimation(options: UseAsciiAnimationOptions): UseAsciiAn
     const lastTimestampRef = useRef<number | null>(null);
     const readyFiredRef = useRef<boolean>(false);
 
+    // ─── Compute numCols from container + image dims ──────────────────────────
+    //
+    // charW = fontSize * 0.6, charH = fontSize * 1.2, cellHeightScale = 2 by default.
+    // When cellHeightScale=2, canvas aspect ratio ≈ image aspect ratio, so we use
+    // the image AR directly for cleaner CSS sizing math.
+    //
+    // contain → numCols that keeps canvas ≤ containerW AND ≤ containerH
+    // cover   → numCols that keeps canvas ≥ containerW AND ≥ containerH
+    const computeNumCols = useCallback(
+        (containerW: number, containerH: number | null, img: HTMLImageElement | null): number => {
+            const charW = fontSize * 0.6;
+            const charH = fontSize * 1.2;
+
+            if (!containerRef) return numCols;
+
+            // No fit or no height → width-only (legacy behaviour).
+            if (!fit || containerH === null || containerH <= 0) {
+                return Math.max(1, Math.min(numCols, Math.floor(containerW / charW)));
+            }
+
+            // No image yet → approximate with width only.
+            if (!img || img.naturalWidth <= 0 || img.naturalHeight <= 0) {
+                return Math.max(1, Math.min(numCols, Math.floor(containerW / charW)));
+            }
+
+            const imgW = img.naturalWidth;
+            const imgH = img.naturalHeight;
+
+            // Option A: size by container width.
+            const numColsByWidth = Math.max(1, Math.floor(containerW / charW));
+            const numRowsByWidth = Math.max(1, Math.floor((imgH * numColsByWidth) / (imgW * cellHeightScale)));
+            const canvasHByWidth = numRowsByWidth * charH;
+
+            // Option B: size by container height.
+            const numRowsByHeight = Math.max(1, Math.floor(containerH / charH));
+            const numColsByHeight = Math.max(
+                1,
+                Math.round((imgW * numRowsByHeight * cellHeightScale) / imgH),
+            );
+
+            let cols: number;
+            if (fit === "contain") {
+                cols = canvasHByWidth <= containerH ? numColsByWidth : numColsByHeight;
+            } else {
+                // cover
+                cols = canvasHByWidth >= containerH ? numColsByWidth : numColsByHeight;
+            }
+
+            return Math.max(1, Math.min(numCols, cols));
+        },
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [containerRef, fit, fontSize, numCols, cellHeightScale],
+    );
+
+    // ─── Compute CSS pixel dimensions for the canvas element ─────────────────
+    //
+    // numCols determines rendering RESOLUTION (how many characters).
+    // canvasCssSize is the CSS size we apply to the <canvas> element so it
+    // visually fills the container with contain/cover semantics — just like
+    // CSS object-fit does for <img>.
+    //
+    // Since canvas AR ≈ image AR (when cellHeightScale=2), we use image AR directly.
+    const computeCanvasCssSize = useCallback(
+        (
+            containerW: number,
+            containerH: number,
+            img: HTMLImageElement | null,
+        ): { width: number; height: number } | null => {
+            if (!fit || !img || img.naturalWidth <= 0 || img.naturalHeight <= 0) return null;
+
+            const imgAR = img.naturalWidth / img.naturalHeight;
+            const containerAR = containerW / containerH;
+
+            if (fit === "contain") {
+                if (imgAR >= containerAR) {
+                    // Image is wider relative to container → width-constrained
+                    return { width: containerW, height: Math.round(containerW / imgAR) };
+                } else {
+                    // Image is taller relative to container → height-constrained
+                    return { width: Math.round(containerH * imgAR), height: containerH };
+                }
+            } else {
+                // cover
+                if (imgAR >= containerAR) {
+                    // Image is wider → height-constrained (scale up by height to cover width)
+                    return { width: Math.round(containerH * imgAR), height: containerH };
+                } else {
+                    // Image is taller → width-constrained (scale up by width to cover height)
+                    return { width: containerW, height: Math.round(containerW / imgAR) };
+                }
+            }
+        },
+        [fit],
+    );
+
     // ─── Sync effectiveNumColsRef with state ──────────────────────────────────
     useEffect(() => {
         effectiveNumColsRef.current = effectiveNumCols;
     }, [effectiveNumCols]);
 
-    // ─── ResizeObserver – recompute numCols when container resizes ────────────
+    // ─── ResizeObserver – track container W+H, recompute cols + CSS size ──────
     useEffect(() => {
         if (!containerRef) {
-            // No container → just use the prop directly.
             setEffectiveNumCols(numCols);
             effectiveNumColsRef.current = numCols;
+            containerSizeRef.current = null;
+            setCanvasCssSize(null);
             return;
         }
 
         const el = containerRef.current;
         if (!el) return;
 
-        const compute = (width: number) => {
-            const charW = fontSize * 0.6;
-            const cols = Math.max(1, Math.min(numCols, Math.floor(width / charW)));
+        const update = (width: number, height: number) => {
+            containerSizeRef.current = { width, height };
+            const cols = computeNumCols(width, height, imageRef.current);
             setEffectiveNumCols(cols);
             effectiveNumColsRef.current = cols;
+            setCanvasCssSize(computeCanvasCssSize(width, height, imageRef.current));
         };
 
-        // Initial measurement
-        compute(el.clientWidth);
+        // Initial measurement.
+        update(el.clientWidth, el.clientHeight);
 
         const observer = new ResizeObserver((entries) => {
             const entry = entries[0];
             if (!entry) return;
-            // Use contentBoxSize when available for sub-pixel precision
-            const width =
-                entry.contentBoxSize?.[0]?.inlineSize ?? (entry.target as HTMLElement).clientWidth;
-            compute(width);
+            const boxSize = entry.contentBoxSize?.[0];
+            const width = boxSize?.inlineSize ?? (entry.target as HTMLElement).clientWidth;
+            const height = boxSize?.blockSize ?? (entry.target as HTMLElement).clientHeight;
+            update(width, height);
         });
 
         observer.observe(el);
         return () => observer.disconnect();
-    }, [containerRef, fontSize, numCols]);
+    }, [containerRef, computeNumCols, computeCanvasCssSize, numCols]);
 
     // ─── Draw a single frame ──────────────────────────────────────────────────
     const drawFrame = useCallback(() => {
@@ -137,7 +244,7 @@ export function useAsciiAnimation(options: UseAsciiAnimationOptions): UseAsciiAn
 
         const loop = (timestamp: number) => {
             if (lastTimestampRef.current !== null) {
-                const dt = (timestamp - lastTimestampRef.current) / 1000; // seconds
+                const dt = (timestamp - lastTimestampRef.current) / 1000;
                 if (noiseScale > 0 && noiseSpeed > 0) {
                     timeRef.current += dt * noiseSpeed;
                 }
@@ -146,7 +253,6 @@ export function useAsciiAnimation(options: UseAsciiAnimationOptions): UseAsciiAn
 
             drawFrame();
 
-            // Only keep looping if there is actual animation
             if (noiseScale > 0 && noiseSpeed > 0) {
                 rafRef.current = requestAnimationFrame(loop);
             }
@@ -180,6 +286,16 @@ export function useAsciiAnimation(options: UseAsciiAnimationOptions): UseAsciiAn
             .then((img) => {
                 if (cancelled) return;
                 imageRef.current = img;
+
+                // Recompute with proper contain/cover math now that we have image dims.
+                if (containerSizeRef.current) {
+                    const { width, height } = containerSizeRef.current;
+                    const cols = computeNumCols(width, height, img);
+                    setEffectiveNumCols(cols);
+                    effectiveNumColsRef.current = cols;
+                    setCanvasCssSize(computeCanvasCssSize(width, height, img));
+                }
+
                 startLoop();
             })
             .catch((err) => {
@@ -203,7 +319,6 @@ export function useAsciiAnimation(options: UseAsciiAnimationOptions): UseAsciiAn
     // ─── Redraw static frame when rendering options change ────────────────────
     useEffect(() => {
         if (!imageRef.current) return;
-        // If animation is running the loop handles redraws, else force one
         if (rafRef.current === null) {
             drawFrame();
         }
@@ -213,5 +328,5 @@ export function useAsciiAnimation(options: UseAsciiAnimationOptions): UseAsciiAn
         drawFrame();
     }, [drawFrame]);
 
-    return { canvasRef, redraw, effectiveNumCols };
+    return { canvasRef, redraw, effectiveNumCols, canvasCssSize };
 }

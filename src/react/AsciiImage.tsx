@@ -7,7 +7,7 @@ export interface AsciiImageProps {
     /**
      * Image source. Accepts:
      * - A URL string (must be CORS-accessible if cross-origin)
-     * - A `File` or `Blob` (e.g. from an <input type="file">)
+     * - A `File` or `Blob` (e.g. from an `<input type="file">`)
      * - An existing `HTMLImageElement`
      * - `null` to render nothing
      */
@@ -16,6 +16,8 @@ export interface AsciiImageProps {
     /**
      * Number of character columns.
      * Higher = more detail, heavier computation.
+     * When `fit` is set this acts as an upper cap — the actual column count
+     * is derived from the container dimensions and image aspect ratio.
      * @default 100
      */
     numCols?: number;
@@ -90,13 +92,47 @@ export interface AsciiImageProps {
     "aria-label"?: string;
 
     /**
-     * When `true`, the component fills its parent container and automatically
-     * adjusts `numCols` (up to the value you pass) to match the available width.
-     * The parent must have an explicit size (e.g. `width: 100%`, `height: 100%`,
-     * or `flex: 1`) for this to work correctly.
+     * CSS `object-fit`-like sizing mode.
+     *
+     * - `"contain"` — the ASCII art is scaled so it fits entirely within the
+     *   container while preserving the image's aspect ratio (letterboxed).
+     * - `"cover"` — the ASCII art is scaled so it fully covers the container,
+     *   cropping the image if its aspect ratio doesn't match.
+     *
+     * When set, the component observes its container with a ResizeObserver and
+     * recomputes `numCols` automatically on every resize. Pair with `width` and
+     * `height` to give the container an explicit size, or let the parent control
+     * dimensions via CSS (e.g. `style={{ width: "100%", height: "100%" }}`).
+     */
+    fit?: "contain" | "cover";
+
+    /**
+     * Container width (any valid CSS length or a number treated as pixels).
+     * Has no effect without `fit`.
+     * @example width={800}   width="100%"   width="50vw"
+     */
+    width?: number | string;
+
+    /**
+     * Container height (any valid CSS length or a number treated as pixels).
+     * Has no effect without `fit`.
+     * @example height={600}  height="100%"  height="50vh"
+     */
+    height?: number | string;
+
+    /**
+     * @deprecated Use `fit="contain"` instead.
+     * Fills parent container width and auto-adjusts `numCols` to match.
      * @default false
      */
     responsive?: boolean;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function toCssLength(v: number | string | undefined): string | undefined {
+    if (v === undefined) return undefined;
+    return typeof v === "number" ? `${v}px` : v;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -106,16 +142,14 @@ export interface AsciiImageProps {
  *
  * @example
  * ```tsx
- * <AsciiImage
- *   src={myFile}
- *   numCols={120}
- *   charset="english"
- *   color
- *   noiseScale={0.3}
- *   noiseSpeed={1.0}
- *   background="#0a0a0a"
- *   fontSize={9}
- * />
+ * // Fixed column count (classic)
+ * <AsciiImage src={myFile} numCols={120} charset="english" color noiseScale={0.3} />
+ *
+ * // Fill a 800×500 box — contain mode (letterboxed)
+ * <AsciiImage src={myFile} fit="contain" width={800} height={500} numCols={200} />
+ *
+ * // Fill entire parent — cover mode (cropped)
+ * <AsciiImage src={myFile} fit="cover" style={{ width: "100%", height: "100%" }} />
  * ```
  */
 export const AsciiImage = forwardRef<HTMLDivElement, AsciiImageProps>(function AsciiImage(props, ref) {
@@ -133,13 +167,19 @@ export const AsciiImage = forwardRef<HTMLDivElement, AsciiImageProps>(function A
         className,
         style,
         "aria-label": ariaLabel = "ASCII art image",
+        fit,
+        width,
+        height,
         responsive = false,
     } = props;
 
-    // Used as the resize anchor when responsive=true
+    // Internal ref used as the ResizeObserver anchor.
     const containerRef = useRef<HTMLDivElement>(null);
 
-    const { canvasRef } = useAsciiAnimation({
+    // Enable responsive behaviour when `fit` is set OR the legacy `responsive` flag is on.
+    const isResponsive = !!(fit || responsive);
+
+    const { canvasRef, canvasCssSize } = useAsciiAnimation({
         src,
         numCols,
         charset,
@@ -150,15 +190,21 @@ export const AsciiImage = forwardRef<HTMLDivElement, AsciiImageProps>(function A
         fontSize,
         fontFamily,
         onReady,
-        containerRef: responsive ? containerRef : undefined,
+        containerRef: isResponsive ? containerRef : undefined,
+        fit,
     });
 
-    const containerStyle: CSSProperties = responsive
+    // ─── Container style ──────────────────────────────────────────────────────
+    // The container establishes the sizing context. With fit mode:
+    //   contain → background color shows in letterbox areas
+    //   cover   → container clips the canvas overflow
+    const containerStyle: CSSProperties = isResponsive
         ? {
               display: "block",
-              width: "100%",
-              height: "100%",
+              width: toCssLength(width) ?? "100%",
+              height: toCssLength(height) ?? "100%",
               overflow: "hidden",
+              position: "relative",
               lineHeight: 0,
               backgroundColor: background,
               ...style,
@@ -170,17 +216,39 @@ export const AsciiImage = forwardRef<HTMLDivElement, AsciiImageProps>(function A
               ...style,
           };
 
-    const canvasStyle: CSSProperties = responsive
-        ? { display: "block", width: "100%", height: "100%", objectFit: "contain" }
+    // ─── Canvas style ─────────────────────────────────────────────────────────
+    // canvasCssSize drives the VISUAL size of the canvas element.
+    //   - It is computed from the image aspect ratio + container dimensions.
+    //   - For contain: canvas fits within the container (may have letterbox).
+    //   - For cover:   canvas fills the container (may overflow and get clipped).
+    // The canvas's intrinsic pixel resolution (set by renderFrame) is independent
+    // and determined by numCols — so there is no quality loss from CSS scaling.
+    const canvasStyle: CSSProperties = isResponsive
+        ? {
+              display: "block",
+              position: "absolute",
+              top: "50%",
+              left: "50%",
+              transform: "translate(-50%, -50%)",
+              // Apply exact CSS dimensions once the image is loaded and
+              // canvasCssSize is known; before that the canvas is invisible.
+              ...(canvasCssSize
+                  ? { width: `${canvasCssSize.width}px`, height: `${canvasCssSize.height}px` }
+                  : { visibility: "hidden" }),
+          }
         : { display: "block" };
 
     return (
-        <div ref={(node) => {
-            // Support both the forwarded ref and our internal containerRef
-            containerRef.current = node;
-            if (typeof ref === "function") ref(node);
-            else if (ref) (ref as React.MutableRefObject<HTMLDivElement | null>).current = node;
-        }} className={className} style={containerStyle}>
+        <div
+            ref={(node) => {
+                // Wire both the internal containerRef and any forwarded ref.
+                containerRef.current = node;
+                if (typeof ref === "function") ref(node);
+                else if (ref) (ref as React.MutableRefObject<HTMLDivElement | null>).current = node;
+            }}
+            className={className}
+            style={containerStyle}
+        >
             <canvas ref={canvasRef} role="img" aria-label={ariaLabel} style={canvasStyle} />
         </div>
     );
