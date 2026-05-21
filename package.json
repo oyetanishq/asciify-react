@@ -21,7 +21,8 @@
     "scripts": {
         "build": "tsup",
         "dev": "tsup --watch",
-        "typecheck": "tsc --noEmit"
+        "typecheck": "tsc --noEmit",
+        "build:demo": "pnpm run build && pnpm --filter ./demo/ run build"
     },
     "peerDependencies": {
         "react": ">=17.0.0",
