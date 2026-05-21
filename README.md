@@ -4,6 +4,10 @@
 
 ---
 
+<img width="1566" height="1019" alt="image" src="https://github.com/user-attachments/assets/0ef08075-16bf-48e7-8e92-5f1189a45623" />
+
+*DEMO*: [asciify-react.vercel.app](http://asciify-react.vercel.app)
+
 ## Features
 
 - 🖼️ **Image → ASCII** conversion, running entirely in the browser via Canvas APIs (no server needed)
