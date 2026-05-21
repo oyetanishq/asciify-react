@@ -20,6 +20,16 @@ export interface UseAsciiAnimationOptions extends ImageToAsciiOptions, RenderOpt
      * - `undefined` — width-only responsive (legacy behaviour)
      */
     fit?: "contain" | "cover";
+
+    // ─── Mouse interaction ─────────────────────────────────────────────────
+    /** Whether the mouse pushes or attracts characters. @default "push" */
+    mouseMode?: "attract" | "push";
+    /** Maximum pixel displacement at the cursor center. @default 0 (disabled) */
+    hoverStrength?: number;
+    /** Radius in canvas pixels of the interaction zone. @default 80 */
+    hoverAreaSize?: number;
+    /** Falloff sharpness — higher = sharper edge. @default 2 */
+    hoverSpread?: number;
 }
 
 export interface UseAsciiAnimationReturn {
@@ -60,6 +70,10 @@ export function useAsciiAnimation(options: UseAsciiAnimationOptions): UseAsciiAn
         onReady,
         containerRef,
         fit,
+        mouseMode = "push",
+        hoverStrength = 0,
+        hoverAreaSize = 80,
+        hoverSpread = 2,
     } = options;
 
     const [effectiveNumCols, setEffectiveNumCols] = useState<number>(numCols);
@@ -77,6 +91,10 @@ export function useAsciiAnimation(options: UseAsciiAnimationOptions): UseAsciiAn
     const timeRef = useRef<number>(0);
     const lastTimestampRef = useRef<number | null>(null);
     const readyFiredRef = useRef<boolean>(false);
+    // Current mouse position in canvas-pixel space (null when cursor is outside).
+    const mousePosRef = useRef<{ x: number; y: number } | null>(null);
+    // Whether mouse interaction is active (hoverStrength > 0).
+    const mouseActiveRef = useRef<boolean>(hoverStrength > 0);
 
     // ─── Compute numCols from container + image dims ──────────────────────────
     //
@@ -230,13 +248,22 @@ export function useAsciiAnimation(options: UseAsciiAnimationOptions): UseAsciiAn
             time: timeRef.current,
         });
 
-        renderFrame(canvas, frame, { background, fontSize, fontFamily });
+        renderFrame(canvas, frame, {
+            background,
+            fontSize,
+            fontFamily,
+            mouseMode,
+            hoverStrength,
+            hoverAreaSize,
+            hoverSpread,
+            mousePos: mouseActiveRef.current ? mousePosRef.current : null,
+        });
 
         if (!readyFiredRef.current && onReady) {
             readyFiredRef.current = true;
             onReady(canvas);
         }
-    }, [effectiveNumCols, charset, color, cellHeightScale, noiseScale, background, fontSize, fontFamily, onReady]);
+    }, [effectiveNumCols, charset, color, cellHeightScale, noiseScale, background, fontSize, fontFamily, onReady, mouseMode, hoverStrength, hoverAreaSize, hoverSpread]);
 
     // ─── Animation loop ───────────────────────────────────────────────────────
     const startLoop = useCallback(() => {
@@ -253,7 +280,8 @@ export function useAsciiAnimation(options: UseAsciiAnimationOptions): UseAsciiAn
 
             drawFrame();
 
-            if (noiseScale > 0 && noiseSpeed > 0) {
+            // Keep looping while noise is animated OR mouse interaction is active
+            if ((noiseScale > 0 && noiseSpeed > 0) || mouseActiveRef.current) {
                 rafRef.current = requestAnimationFrame(loop);
             }
         };
@@ -315,6 +343,51 @@ export function useAsciiAnimation(options: UseAsciiAnimationOptions): UseAsciiAn
         stopLoop();
         startLoop();
     }, [noiseScale, noiseSpeed, startLoop, stopLoop]);
+
+    // ─── Keep mouseActiveRef in sync, restart loop when interaction changes ───
+    useEffect(() => {
+        mouseActiveRef.current = hoverStrength > 0;
+        if (!imageRef.current) return;
+        stopLoop();
+        startLoop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [hoverStrength, startLoop, stopLoop]);
+
+    // ─── Mouse tracking on the canvas element ─────────────────────────────────
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas || !mouseActiveRef.current) return;
+
+        const onMove = (e: MouseEvent) => {
+            const rect = canvas.getBoundingClientRect();
+            // Scale from CSS pixels to canvas pixels
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            mousePosRef.current = {
+                x: (e.clientX - rect.left) * scaleX,
+                y: (e.clientY - rect.top) * scaleY,
+            };
+            // Kick-start the loop if it isn't already running
+            if (rafRef.current === null) {
+                startLoop();
+            }
+        };
+
+        const onLeave = () => {
+            mousePosRef.current = null;
+            // Draw one final frame to clear the displacement
+            drawFrame();
+        };
+
+        canvas.addEventListener("mousemove", onMove);
+        canvas.addEventListener("mouseleave", onLeave);
+        return () => {
+            canvas.removeEventListener("mousemove", onMove);
+            canvas.removeEventListener("mouseleave", onLeave);
+        };
+    // Re-attach whenever the canvas mounts or interaction is toggled
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [hoverStrength, startLoop, drawFrame]);
 
     // ─── Redraw static frame when rendering options change ────────────────────
     useEffect(() => {

@@ -204,6 +204,40 @@ export interface RenderOptions {
     fontSize?: number;
     /** Font family. @default "monospace" */
     fontFamily?: string;
+
+    // ─── Mouse interaction ────────────────────────────────────────────────────
+
+    /**
+     * Whether the mouse attracts characters toward it or pushes them away.
+     * @default "push"
+     */
+    mouseMode?: "attract" | "push";
+    /**
+     * Maximum pixel displacement applied to a character at the cursor's center.
+     * @default 20
+     */
+    hoverStrength?: number;
+    /**
+     * Reference radius for the Gaussian falloff (in canvas pixels).
+     * At this distance from the cursor the force is `e^(-hoverSpread)` of peak strength.
+     * With the default `hoverSpread=2` this is roughly the half-strength point.
+     * @default 80
+     */
+    hoverAreaSize?: number;
+    /**
+     * Tightness of the Gaussian bell curve.
+     * `force = hoverStrength × exp(-hoverSpread × (dist/hoverAreaSize)²)`
+     * - `1` — wide soft halo
+     * - `2` — balanced (default)
+     * - `5+` — tightly concentrated near cursor
+     * @default 2
+     */
+    hoverSpread?: number;
+    /**
+     * Current mouse position in canvas pixel coordinates.
+     * Pass `null` (or omit) to disable the interaction.
+     */
+    mousePos?: { x: number; y: number } | null;
 }
 
 /**
@@ -211,7 +245,7 @@ export interface RenderOptions {
  * Call this in a requestAnimationFrame loop for animation.
  */
 export function renderFrame(canvas: HTMLCanvasElement, frame: AsciiFrame, options: RenderOptions = {}): void {
-    const { background = "#000000", fontSize = 10, fontFamily = "monospace" } = options;
+    const { background = "#000000", fontSize = 10, fontFamily = "monospace", mouseMode = "push", hoverStrength = 20, hoverAreaSize = 80, hoverSpread = 2, mousePos = null } = options;
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -231,14 +265,51 @@ export function renderFrame(canvas: HTMLCanvasElement, frame: AsciiFrame, option
     ctx.font = `${fontSize}px ${fontFamily}`;
     ctx.textBaseline = "top";
 
+    const hasMouseInteraction = mousePos !== null && hoverStrength > 0 && hoverAreaSize > 0;
+
     for (let i = 0; i < frame.numRows; i++) {
         const row = frame.cells[i];
         if (!row) continue;
         for (let j = 0; j < frame.numCols; j++) {
             const cell = row[j];
             if (!cell) continue;
+
+            // Base position (top-left of the character cell)
+            let dx = 0;
+            let dy = 0;
+
+            if (hasMouseInteraction && mousePos) {
+                // Center of this character cell in canvas pixels
+                const cx = j * charW + charW * 0.5;
+                const cy = i * charH + charH * 0.5;
+
+                const diffX = cx - mousePos.x;
+                const diffY = cy - mousePos.y;
+                const dist = Math.sqrt(diffX * diffX + diffY * diffY);
+
+                if (dist > 0) {
+                    // Gaussian radial falloff: strength = hoverStrength × e^(−spread × (dist/area)²)
+                    // Naturally circular, no hard edge, smoothly → 0 as dist → ∞
+                    const r = dist / hoverAreaSize;
+                    const force = Math.exp(-hoverSpread * r * r) * hoverStrength;
+
+                    // Unit vector from mouse to cell (push) or cell to mouse (attract)
+                    const nx = diffX / dist;
+                    const ny = diffY / dist;
+
+                    if (mouseMode === "push") {
+                        dx = nx * force;
+                        dy = ny * force;
+                    } else {
+                        // attract: pull toward cursor
+                        dx = -nx * force;
+                        dy = -ny * force;
+                    }
+                }
+            }
+
             ctx.fillStyle = `rgb(${cell.r},${cell.g},${cell.b})`;
-            ctx.fillText(cell.char, j * charW, i * charH);
+            ctx.fillText(cell.char, j * charW + dx, i * charH + dy);
         }
     }
 }

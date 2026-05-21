@@ -126,6 +126,37 @@ export interface AsciiImageProps {
      * @default false
      */
     responsive?: boolean;
+
+    // ─── Mouse interaction ────────────────────────────────────────────────────
+
+    /**
+     * Whether hovering the mouse over the ASCII art pushes characters away
+     * or attracts them toward the cursor.
+     * @default "push"
+     */
+    mouseMode?: "attract" | "push";
+
+    /**
+     * Maximum pixel displacement applied to characters at the very center of
+     * the cursor.
+     * Set to `0` (default) to disable mouse interaction entirely.
+     * @default 0
+     */
+    hoverStrength?: number;
+
+    /**
+     * Radius of the interaction zone in canvas pixels.
+     * Characters beyond this distance from the cursor are unaffected.
+     * @default 80
+     */
+    hoverAreaSize?: number;
+
+    /**
+     * Controls how quickly the effect fades with distance.
+     * `1` = linear, `2` = quadratic (softer edge), higher = sharper boundary.
+     * @default 2
+     */
+    hoverSpread?: number;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -171,6 +202,10 @@ export const AsciiImage = forwardRef<HTMLDivElement, AsciiImageProps>(function A
         width,
         height,
         responsive = false,
+        mouseMode = "push",
+        hoverStrength = 0,
+        hoverAreaSize = 80,
+        hoverSpread = 2,
     } = props;
 
     // Internal ref used as the ResizeObserver anchor.
@@ -192,6 +227,10 @@ export const AsciiImage = forwardRef<HTMLDivElement, AsciiImageProps>(function A
         onReady,
         containerRef: isResponsive ? containerRef : undefined,
         fit,
+        mouseMode,
+        hoverStrength,
+        hoverAreaSize,
+        hoverSpread,
     });
 
     // ─── Container style ──────────────────────────────────────────────────────
@@ -232,9 +271,7 @@ export const AsciiImage = forwardRef<HTMLDivElement, AsciiImageProps>(function A
               transform: "translate(-50%, -50%)",
               // Apply exact CSS dimensions once the image is loaded and
               // canvasCssSize is known; before that the canvas is invisible.
-              ...(canvasCssSize
-                  ? { width: `${canvasCssSize.width}px`, height: `${canvasCssSize.height}px` }
-                  : { visibility: "hidden" }),
+              ...(canvasCssSize ? { width: `${canvasCssSize.width}px`, height: `${canvasCssSize.height}px` } : { visibility: "hidden" }),
           }
         : { display: "block" };
 
