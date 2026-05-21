@@ -1,6 +1,6 @@
 {
     "name": "asciify-react",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "description": "Convert images to animated ASCII art — a zero-dependency React component with noise animation",
     "author": "Tanishq Singh",
     "license": "MIT",
