@@ -1,0 +1,47 @@
+{
+    "name": "asciify-react",
+    "version": "1.0.0",
+    "description": "Convert images to animated ASCII art — a zero-dependency React component with noise animation",
+    "author": "Tanishq Singh",
+    "license": "MIT",
+    "type": "module",
+    "main": "./dist/index.cjs",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js",
+            "require": "./dist/index.cjs"
+        }
+    },
+    "files": [
+        "dist"
+    ],
+    "scripts": {
+        "build": "tsup",
+        "dev": "tsup --watch",
+        "typecheck": "tsc --noEmit"
+    },
+    "peerDependencies": {
+        "react": ">=17.0.0",
+        "react-dom": ">=17.0.0"
+    },
+    "devDependencies": {
+        "@types/react": "^19.0.0",
+        "@types/react-dom": "^19.0.0",
+        "tsup": "^8.1.0",
+        "typescript": "^5.4.5"
+    },
+    "keywords": [
+        "ascii",
+        "ascii-art",
+        "asciify-react",
+        "image",
+        "react",
+        "canvas",
+        "noise",
+        "animation",
+        "typescript"
+    ]
+}
